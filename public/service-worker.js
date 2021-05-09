@@ -10,80 +10,54 @@ const FILES_TO_CACHE = [
     'https://cdn.jsdelivr.net/npm/chart.js@2.8.0',
     'https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css'
   ];
-  const CACHE_NAME = "static-cache-v2";
-  const DATA_CACHE_NAME = "data-cache-v1";
+  const PRECACHE = 'precache-v1';
+  const RUNTIME = 'runtime';
 
-  //install
-
-  self.addEventListener("install", function(event) {
-
-      const cacheResources = async () => {
-          const resourceCache = await caches.open(CACHE_NAME);
-          return resourceCache.addAll(FILES_TO_CACHE);
-      }
-
-      self.skipWaiting();
-
-      event.waitUntil(cacheResources());
-
-      console.log("CHA-CHING!");
+  self.addEventListener('install', (event) => {
+    event.waitUntil(
+      caches
+        .open(PRECACHE)
+        .then((cache) => cache.addAll(FILES_TO_CACHE))
+        .then(self.skipWaiting())
+    );
   });
 
-  //activate
-
-  self.addEventListener("activate", function(evt) {
-    console.log("activated!");
-
-    const removeOldCache = async () => {
-      const cacheKeyArray = await caches.keys();
-    
-      const cacheResultPromiseArray = cacheKeyArray.map(key => {
-        if (key !== CACHE_NAME && key !== DATA_CACHE_NAME) {
-          console.log("Removing old cache data", key);
-          return caches.delete(key);
-        }
-      });  
-      return Promise.all(cacheResultPromiseArray);
-    }
-
-    evt.waitUntil(removeOldCache()); 
-
-    self.clients.claim();
+  // The activate handler takes care of cleaning up old caches.
+  self.addEventListener('activate', (event) => {
+    const currentCaches = [PRECACHE, RUNTIME];
+    event.waitUntil(
+      caches
+        .keys()
+        .then((cacheNames) => {
+          return cacheNames.filter((cacheName) => !currentCaches.includes(cacheName));
+        })
+        .then((cachesToDelete) => {
+          return Promise.all(
+            cachesToDelete.map((cacheToDelete) => {
+              return caches.delete(cacheToDelete);
+            })
+          );
+        })
+        .then(() => self.clients.claim())
+    );
   });
 
-  //fetch
-
-  self.addEventListener('fetch', function(evt) {
-
-    const handleAPIDataRequest = async (event) => {
-        try {
-          const response = await fetch(event.request);
-          // If the response was good, clone it and store it in the cache.
-          if (response.status === 200) {
-            console.log(`Adding API request to cache now: ${event.request.url}`);
-    
-            const apiCache = await caches.open(DATA_CACHE_NAME);
-            await apiCache.put(event.request.url, response.clone());
-    
-            return response;
+  self.addEventListener('fetch', (event) => {
+    if (event.request.url.startsWith(self.location.origin)) {
+      event.respondWith(
+        caches.match(event.request).then((cachedResponse) => {
+          if (cachedResponse) {
+            return cachedResponse;
           }
-        } catch(error) {
-          // Network request failed, try to get it from the cache.
-          console.log(`Network error occurred with API request. Now retrieving it from the cache: ${event.request.url}`)
-          return await caches.match(event.request);
-        }
-      }
-    // code to handle requests goes here
-    const handleResourceRequest = async (evt) => {
-        const matchedCache = await caches.match(evt.request);
-        return matchedCache ||  await fetch(evt.request);
-      }
 
-      if (evt.request.url.includes("/api/")) {
-        evt.respondWith(handleAPIDataRequest(evt));
-      } else {
-    
-      evt.respondWith(handleResourceRequest(evt));
-      }
-
-    });
+          return caches.open(RUNTIME).then((cache) => {
+            return fetch(event.request).then((response) => {
+              return cache.put(event.request, response.clone()).then(() => {
+                return response;
+              });
+            });
+          });
+        })
+      );
+    }
+  });
